@@ -36,8 +36,7 @@ def snapshot(model, optimizer, config, step, gpus=[0], tag=None, scheduler=None)
                           "model_snapshot_{:07d}.pth".format(step)))
   # update config file's test path
   save_name = os.path.join(config.save_dir, 'config.yaml')
-  # config_save = edict(yaml.load(open(save_name, 'r'), Loader=yaml.FullLoader))
-  config_save = edict(yaml.load(open(save_name, 'r')))
+  config_save = edict(yaml.load(open(save_name, 'r'), Loader=yaml.FullLoader))
   config_save.test.test_model_dir = config.save_dir
   config_save.test.test_model_name = "model_snapshot_{}.pth".format(
           tag) if tag is not None else "model_snapshot_{:07d}.pth".format(step)
