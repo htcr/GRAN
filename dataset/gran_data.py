@@ -47,10 +47,13 @@ class GRANData(object):
 
       self.config.dataset.save_path = self.save_path
       for index in tqdm(range(self.num_graphs)):
+        # One graph.
         G = self.graphs[index]
+        # A list of the adj matrices of the graph in different node orders.
         data = self._get_graph_data(G)
         tmp_path = os.path.join(self.save_path, '{}_{}.p'.format(tag, index))
         pickle.dump(data, open(tmp_path, 'wb'))
+        # One file per graph.
         self.file_names += [tmp_path]
     else:
       self.file_names = glob.glob(os.path.join(self.save_path, '*.p'))
@@ -141,11 +144,28 @@ class GRANData(object):
     return adj_list
 
   def __getitem__(self, index):
+    # @congrui's comment: This data loader is implemented in a rather strange way. According to the paper,
+    # the goal is to train a network of p(edges to newly added nodes | existing graph), 
+    # maximizing a log-likelihood lower bound computed by summing the likelihood
+    # under a set of pre-defined node orderings. This seems achievable by simply
+    # sampling as follows:
+    # Select a graph -> select an ordering -> select a subgraph -> generate a training pair
+    # Which could be implemented much easier than the brainfuck here.
+    # 
+    # The data loader here though is implemented in a weird manner.
+    # Weird 1): __getitem__ returns a batch, size=50 something, then collate_fn does some post-processing.
+    #           and the batch_size for pytorch is actually 1 X(
+    # Weird 2): Each batch then seems to come from the same graph. Shouldn't we mix them together?
+    # Weird 3): Items in the batch keeps the order of the specified canonical orders. Is this necessary?
+    # Weird 4): The subgraphs in a batch are randomly selected, but they keep an increasing-node-num order
+    #           in the batch. Is this necessary?
+
     K = self.block_size
     N = self.max_num_nodes
     S = self.stride
 
     # load graph
+    # List of adj matrices of one graph in different node orders.
     adj_list = pickle.load(open(self.file_names[index], 'rb'))
     num_nodes = adj_list[0].shape[0]
     num_subgraphs = int(np.floor((num_nodes - K) / S) + 1)
@@ -167,6 +187,7 @@ class GRANData(object):
 
     start_time = time.time()
     data_batch = []
+    # TODO(congrui) Figure out. Seems it's splitting subgraphs into groups. Not sure why.
     for ff in range(self.num_fwd_pass):
       ff_idx_start = num_subgraphs_pass * ff
       if ff == self.num_fwd_pass - 1:
@@ -174,6 +195,7 @@ class GRANData(object):
       else:
         ff_idx_end = (ff + 1) * num_subgraphs_pass
 
+      # Randomly samples (without replacement) up to num_subgraphs_pass subgraphs.
       rand_idx = rand_perm_idx[ff_idx_start:ff_idx_end]
 
       edges = []
@@ -186,20 +208,23 @@ class GRANData(object):
       subgraph_count = 0
 
       for ii in range(len(adj_list)):
-        # loop over different orderings
+        # Loops over each node ordering.
         adj_full = adj_list[ii]
         # adj_tril = np.tril(adj_full, k=-1)
 
         idx = -1
+        # jj is the number of 'context' nodes.
         for jj in range(0, num_nodes, S):
           # loop over different subgraphs
           idx += 1
 
           ### for each size-(jj+K) subgraph, we generate edges for the new block of K nodes
           if jj + K > num_nodes:
+            # Each step predicts the next K nodes. Stops if no sufficient nodes left.
             break
 
           if idx not in rand_idx:
+            # Only produces subgraphs sampled for this group.
             continue
 
           ### get graph for GNN propagation
@@ -210,11 +235,13 @@ class GRANData(object):
           adj_block = np.tril(adj_block, k=-1)
           adj_block = adj_block + adj_block.transpose()
           adj_block = torch.from_numpy(adj_block).to_sparse()
+          # [Tensor(2, N_entries)] Each column for one edge.
           edges += [adj_block.coalesce().indices().long()]
 
-          ### get attention index
-          # exist node: 0
-          # newly added node: 1, ..., K
+          ### Gets attention index. att_idx is an 1-d array corresponding to each
+          # node in the subgraph.
+          # Existing/context nodes: values are 0
+          # Newly added/prediction nodse: values are 1, ..., K
           if jj == 0:
             att_idx += [np.arange(1, K + 1).astype(np.uint8)]
           else:
