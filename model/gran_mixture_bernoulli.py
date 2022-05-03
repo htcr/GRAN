@@ -373,16 +373,18 @@ class GRANMixtureBernoulli(nn.Module):
 
   def forward(self, input_dict):
     """
-      B: batch size
-      N: number of rows/columns in mini-batch
-      N_max: number of max number of rows/columns
-      M: number of augmented edges in mini-batch
-      H: input dimension of GNN
-      K: block size
-      E: number of edges in mini-batch
-      S: stride
+      B: batch size.
       C: number of canonical orderings
-      D: number of mixture Bernoulli
+      N_max: maximum allowed node number per graph.
+      
+      N: total number of nodes, from each subgraph in the batch.
+      M: total number of prediction edges (from each subgraph) in the batch.
+      E: total number of context edges (from each subgraph) in the batch.
+      
+      K: block size. At each prediction step, K nodes are predicted.
+      S: stride. At each prediction step, S out of K predicted nodes are kept.
+      H: input dimension of GNN.
+      D: number of mixture Bernoulli.
 
       Args:
         A_pad: B X C X N_max X N_max, padded adjacency matrix
