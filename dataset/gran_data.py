@@ -187,7 +187,6 @@ class GRANData(object):
 
     start_time = time.time()
     data_batch = []
-    # TODO(congrui) Figure out. Seems it's splitting subgraphs into groups. Not sure why.
     for ff in range(self.num_fwd_pass):
       ff_idx_start = num_subgraphs_pass * ff
       if ff == self.num_fwd_pass - 1:
@@ -282,6 +281,8 @@ class GRANData(object):
               np.ones_like(label[-1]).astype(np.int64) * subgraph_count
           ]
           subgraph_count += 1
+        # Ends loop over subgraphs.
+      # Ends loop over canonical orders.
 
       ### adjust index basis for the selected subgraphs
       cum_size = np.cumsum([0] + subgraph_size).astype(np.int64)
@@ -291,18 +292,24 @@ class GRANData(object):
 
       ### pack tensors
       data = {}
-      data['adj'] = np.tril(np.stack(adj_list, axis=0), k=-1)
-      data['edges'] = torch.cat(edges, dim=1).t().long()
-      data['node_idx_gnn'] = np.concatenate(node_idx_gnn)
-      data['node_idx_feat'] = np.concatenate(node_idx_feat)
-      data['label'] = np.concatenate(label)
-      data['att_idx'] = np.concatenate(att_idx)
-      data['subgraph_idx'] = np.concatenate(subgraph_idx)
-      data['subgraph_count'] = subgraph_count
-      data['num_nodes'] = num_nodes
-      data['subgraph_size'] = subgraph_size
-      data['num_count'] = sum(subgraph_size)
+      data['adj'] = np.tril(np.stack(adj_list, axis=0), k=-1)  # [canonical_order_num, max_node_num, max_node_num]
+      data['edges'] = torch.cat(edges, dim=1).t().long()  # [sum(subgraph_context_edge_nums), 2]
+      data['node_idx_gnn'] = np.concatenate(node_idx_gnn)  # [sum(subgraph_predict_edge_nums), 2]
+      data['node_idx_feat'] = np.concatenate(node_idx_feat)  # [sum(subgraph_node_nums)]
+      data['label'] = np.concatenate(label)  # [sum(subgraph_predict_edge_nums)]
+      data['att_idx'] = np.concatenate(att_idx)  # [sum(subgraph_node_nums)]
+      # The index of the subgraph that the predicted edge belongs to.
+      data['subgraph_idx'] = np.concatenate(subgraph_idx)  # [sum(subgraph_predict_edge_nums)]
+      # The number of subgraphs in this data item.
+      data['subgraph_count'] = subgraph_count  # Scalar
+      # The number of nodes in the very original graph for this data item (one graph per item).
+      data['num_nodes'] = num_nodes  # Scalar
+      # The number of (context and predict) nodes in each subgraph of this data item.
+      data['subgraph_size'] = subgraph_size  # [item_subgraph_num]
+      # The total number of nodes (from each subgraph) in this data item.
+      data['num_count'] = sum(subgraph_size)  # Scalar
       data_batch += [data]
+    # Ends loop over "fwd passes".
 
     end_time = time.time()
 
@@ -319,6 +326,7 @@ class GRANData(object):
     C = self.num_canonical_order
     batch_data = []
 
+    # Since num_fwd_pass = 1 for all configs, this loop can be ignored.
     for ff in range(self.num_fwd_pass):
       data = {}
       batch_pass = []
@@ -329,13 +337,13 @@ class GRANData(object):
       subgraph_idx_base = np.array([0] +
                                    [bb['subgraph_count'] for bb in batch_pass])
       subgraph_idx_base = np.cumsum(subgraph_idx_base)
-
+      # [B] When putting all subgraphs from a batch in a list, this is starting index of each data item (original graph).
       data['subgraph_idx_base'] = torch.from_numpy(
         subgraph_idx_base)
-
+      # [B] Number of nodes in each original graph.
       data['num_nodes_gt'] = torch.from_numpy(
           np.array([bb['num_nodes'] for bb in batch_pass])).long().view(-1)
-
+      # [B, C, N, N] 0-padded subgraph adj-matrics, to [max_node_num, max_node_num]
       data['adj'] = torch.from_numpy(
           np.stack(
               [
@@ -344,15 +352,15 @@ class GRANData(object):
                       'constant',
                       constant_values=0.0) for ii, bb in enumerate(batch_pass)
               ],
-              axis=0)).float()  # B X C X N X N
-
+              axis=0)).float()
+      # Similar to subgraph_idx_base, but for nodes. When putting all nodes in the batch to a list, this is the starting index of each data item (original graph).
       idx_base = np.array([0] + [bb['num_count'] for bb in batch_pass])
       idx_base = np.cumsum(idx_base)
-
+      # [batch_context_edge_num, 2]
       data['edges'] = torch.cat(
           [bb['edges'] + idx_base[ii] for ii, bb in enumerate(batch_pass)],
           dim=0).long()
-
+      # [batch_predict_edge_num, 2]
       data['node_idx_gnn'] = torch.from_numpy(
           np.concatenate(
               [
@@ -360,11 +368,11 @@ class GRANData(object):
                   for ii, bb in enumerate(batch_pass)
               ],
               axis=0)).long()
-
+      # [batch_node_num]
       data['att_idx'] = torch.from_numpy(
           np.concatenate([bb['att_idx'] for bb in batch_pass], axis=0)).long()
 
-      # shift one position for padding 0-th row feature in the model
+      # [batch_node_num] shift one position for padding 0-th row feature in the model
       node_idx_feat = np.concatenate(
           [
               bb['node_idx_feat'] + ii * C * N
@@ -373,11 +381,12 @@ class GRANData(object):
           axis=0) + 1
       node_idx_feat[np.isinf(node_idx_feat)] = 0
       node_idx_feat = node_idx_feat.astype(np.int64)
+      # Notice, from now on 0 stands for nodes being predicted.
       data['node_idx_feat'] = torch.from_numpy(node_idx_feat).long()
-
+      # [batch_predict_edge_num]
       data['label'] = torch.from_numpy(
           np.concatenate([bb['label'] for bb in batch_pass])).float()
-
+      # [batch_predict_edge_num], the subgraph index of each predicted edge.
       data['subgraph_idx'] = torch.from_numpy(
           np.concatenate([
               bb['subgraph_idx'] + subgraph_idx_base[ii]
