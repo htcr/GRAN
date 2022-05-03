@@ -1,0 +1,1 @@
+python ./pytorch/train.py train --config_path=./configs/nuscenes/all.pp.mida.config --model_dir=./exp/test_v3 --multi_gpu=True
